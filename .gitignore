@@ -1,0 +1,7 @@
+.streamlit/secrets.toml
+*.json
+app_csv_backup.py
+app test.py
+__pycache__/
+.idea/
+*.lock

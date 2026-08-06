@@ -1,0 +1,6 @@
+streamlit>=1.37
+pandas>=2.0
+plotly>=5.20
+filelock>=3.13
+gspread>=6.2
+google-auth>=2.56
