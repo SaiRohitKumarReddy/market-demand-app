@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 import gspread
 import pandas as pd
@@ -551,7 +553,7 @@ def save_professor_simulation(prefix: str, number_of_people: int) -> None:
         all_people.append((person_name, prices))
 
     simulation_id = f"prof-{uuid.uuid4().hex}"
-    submitted_at = datetime.now().isoformat(timespec="seconds")
+    submitted_at = datetime.now(IST).replace(tzinfo=None).isoformat(timespec="seconds")
 
     rows = [
         {
@@ -605,7 +607,7 @@ def save_student_submission(prefix: str) -> None:
         [
             {
                 "submission_id": f"student-{uuid.uuid4().hex}",
-                "submitted_at": datetime.now().isoformat(timespec="seconds"),
+                "submitted_at": datetime.now(IST).replace(tzinfo=None).isoformat(timespec="seconds"),
                 "name": student_name,
                 **dict(zip(PRICE_COLUMNS, prices)),
             }
