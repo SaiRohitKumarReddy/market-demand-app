@@ -81,10 +81,24 @@ st.markdown(
 
     section[data-testid="stSidebar"] label {
         color: var(--bitsom-navy) !important;
+        font-weight: 600 !important;
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] {
+        gap: 0.45rem;
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] label {
+        padding: 0.35rem 0;
     }
 
     [data-testid="stMetric"] {
         text-align: center !important;
+        background: #FFFFFF;
+        border: 1px solid #E5E6EC;
+        border-radius: 10px;
+        padding: 18px 16px;
+        min-height: 118px;
     }
 
     [data-testid="stMetricValue"] {
@@ -142,15 +156,88 @@ st.markdown(
         border-color: var(--bitsom-red) !important;
     }
 
-    /* Large highlighted prompt shown above the name field. */
+    /* Main application header. */
+    .app-header {
+        margin: 0 0 22px 0;
+        padding-bottom: 14px;
+        border-bottom: 1px solid #E7E7EC;
+    }
+
+    .app-title {
+        color: var(--bitsom-navy);
+        font-size: 2.35rem;
+        line-height: 1.15;
+        font-weight: 700;
+        margin: 0;
+    }
+
+    .app-subtitle {
+        color: #6B6D78;
+        font-size: 1rem;
+        font-weight: 500;
+        margin-top: 5px;
+    }
+
+    /* Compact mode badge used at the top of each mode. */
+    .mode-badge {
+        display: inline-block;
+        color: #FFFFFF;
+        background-color: var(--bitsom-navy);
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 0.76rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin: 2px 0 12px 0;
+    }
+
+    .mode-badge.student {
+        background-color: var(--bitsom-orange);
+    }
+
+    /* Participant marker used in Professor Mode. */
+    .participant-banner {
+        color: var(--bitsom-navy);
+        background-color: #F8F8FA;
+        border: 1px solid #E5E6EC;
+        border-radius: 10px;
+        padding: 9px 13px;
+        margin: 20px 0 8px 0;
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+    }
+
+    /* Refined highlighted prompt shown above the name field. */
     .name-prompt {
         color: var(--bitsom-navy);
-        background-color: #F4F4F6;
-        border-left: 5px solid var(--bitsom-orange);
-        border-radius: 6px;
-        padding: 10px 14px;
-        margin: 18px 0 8px 0;
-        font-size: 1.35rem;
+        background-color: #F8F8FA;
+        border-left: 4px solid var(--bitsom-orange);
+        border-radius: 10px;
+        padding: 9px 13px;
+        margin: 10px 0 8px 0;
+        font-size: 1.05rem;
+        font-weight: 600;
+    }
+
+    /* Compact success feedback. */
+    .compact-success {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: #245A38;
+        background-color: #F2F8F4;
+        border: 1px solid #CFE3D6;
+        border-radius: 9px;
+        padding: 9px 12px;
+        margin: 8px 0 14px 0;
+        font-size: 0.92rem;
+        font-weight: 500;
+    }
+
+    .compact-success .success-icon {
         font-weight: 700;
     }
     /* Visual progress shown above each price question. */
@@ -365,13 +452,11 @@ def show_aggregate_results(
     aggregate = make_aggregate_table(responses)
     total_people = len(responses)
 
-    summary_table = pd.DataFrame(
-        {
-            response_label: [total_people],
-            "Maximum quantity": [total_people * 4],
-        }
-    )
-    render_aggregate_table(summary_table)
+    metric_col_1, metric_col_2 = st.columns(2)
+    with metric_col_1:
+        st.metric(response_label, total_people)
+    with metric_col_2:
+        st.metric("Maximum quantity", total_people * 4)
 
     st.markdown("### Market Demand Data")
     render_aggregate_table(aggregate)
@@ -555,6 +640,19 @@ def render_progressive_person(
 # Session-state callbacks
 # -----------------------------------------------------------------------------
 
+def render_success_message(message: str) -> None:
+    """Display compact branded success feedback without changing message content."""
+    st.markdown(
+        f"""
+        <div class="compact-success">
+            <span class="success-icon">&#10003;</span>
+            <span>{message}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def toggle_results(state_key: str) -> None:
     st.session_state[state_key] = not st.session_state.get(state_key, False)
 
@@ -735,7 +833,7 @@ def professor_mode() -> None:
     header_col, reset_col = st.columns([3, 1])
 
     with header_col:
-        st.header("Professor Mode")
+        st.markdown('<div class="mode-badge">Professor Mode</div>', unsafe_allow_html=True)
 
     with reset_col:
         st.button(
@@ -746,11 +844,11 @@ def professor_mode() -> None:
 
     reset_message = st.session_state.pop("file_reset_message", None)
     if reset_message:
-        st.success(reset_message)
+        render_success_message(reset_message)
 
     success_message = st.session_state.pop("professor_success_message", None)
     if success_message:
-        st.success(success_message)
+        render_success_message(success_message)
 
     save_error = st.session_state.pop("professor_save_error", None)
     if save_error:
@@ -807,6 +905,10 @@ def professor_mode() -> None:
     completed_people: list[tuple[str, list[int | None]]] = []
 
     for person_index in range(1, number_of_people + 1):
+        st.markdown(
+            f'<div class="participant-banner">Person {person_index} of {number_of_people}</div>',
+            unsafe_allow_html=True,
+        )
         person_name, prices, person_complete = render_progressive_person(
             key_prefix=f"{prefix}_person_{person_index}",
         )
@@ -855,11 +957,11 @@ def professor_mode() -> None:
 
 
 def student_mode() -> None:
-    st.header("Student Mode")
+    st.markdown('<div class="mode-badge student">Student Mode</div>', unsafe_allow_html=True)
 
     success_message = st.session_state.pop("student_success_message", None)
     if success_message:
-        st.success(success_message)
+        render_success_message(success_message)
 
     save_error = st.session_state.pop("student_save_error", None)
     if save_error:
@@ -933,10 +1035,18 @@ if "professor_results_visible" not in st.session_state:
 if "student_results_visible" not in st.session_state:
     st.session_state["student_results_visible"] = False
 
-st.title("Market Demand")
+st.markdown(
+    """
+    <div class="app-header">
+        <div class="app-title">Market Demand</div>
+        <div class="app-subtitle">Interactive Willingness-to-Pay Simulation</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 selected_mode = st.sidebar.radio(
-    "Choose a mode",
+    "Simulation Mode",
     options=["Professor Mode", "Student Mode"],
 )
 
