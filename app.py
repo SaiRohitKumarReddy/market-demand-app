@@ -813,7 +813,7 @@ def live_professor_results() -> None:
         heading="Professor Simulation",
         response_label="Total Submission",
     )
-    st.caption("This section checks for a new professor simulation every 3 seconds.")
+    st.caption("Checks for professor new submission every 3 seconds.")
 
 
 @st.fragment(run_every="3s")
