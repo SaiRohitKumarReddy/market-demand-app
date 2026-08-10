@@ -537,7 +537,7 @@ def show_aggregate_results(
         showlegend=False,
         hovertemplate=(
             "Cumulative quantity demanded: %{x}<br>"
-            "Price per Laddo: ₹%{y:.0f}<extra></extra>"
+            "<span style='color:#F58722;'>Price per Laddo: ₹%{y:.0f}</span><extra></extra>"
         ),
     )
 
