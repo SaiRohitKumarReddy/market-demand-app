@@ -662,8 +662,8 @@ def live_professor_results() -> None:
     responses = read_responses(PROFESSOR_SHEET)
     show_aggregate_results(
         responses,
-        heading="Live Professor Simulation",
-        response_label="Total people",
+        heading="Professor Simulation",
+        response_label="Total Submission",
     )
     st.caption("This section checks for a new professor simulation every 3 seconds.")
 
@@ -673,7 +673,7 @@ def live_student_results() -> None:
     responses = read_responses(STUDENT_SHEET)
     show_aggregate_results(
         responses,
-        heading="Live Student Simulation",
+        heading="Student Simulation",
         response_label="Total submissions",
     )
     st.caption("This section checks for new student submissions every 3 seconds.")
