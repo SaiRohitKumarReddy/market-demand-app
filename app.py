@@ -676,7 +676,7 @@ def live_student_results() -> None:
         heading="Student Simulation",
         response_label="Total submissions",
     )
-    st.caption("This section checks for new student submissions every 3 seconds.")
+    st.caption("Checks for new student submissions every 3 seconds.")
 
 
 # -----------------------------------------------------------------------------
