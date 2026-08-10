@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -7,8 +8,10 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 import gspread
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
+import plotly.io as pio
 import streamlit as st
+import streamlit.components.v1 as components
 from gspread import Worksheet
 
 
@@ -485,16 +488,10 @@ def show_aggregate_results(
 
     if responses.empty:
         st.info("No responses have been submitted yet.")
-        st.session_state[animation_state_key] = 0
         return
 
     aggregate = make_aggregate_table(responses)
     total_people = len(responses)
-
-    # Animate only when this browser session detects one or more new rows.
-    previous_total = st.session_state.get(animation_state_key)
-    animate_curve = previous_total is not None and total_people > previous_total
-    st.session_state[animation_state_key] = total_people
 
     summary_table = pd.DataFrame(
         {
@@ -509,37 +506,8 @@ def show_aggregate_results(
 
     st.markdown("### Market Demand Curve")
 
-    # Use only real market-demand observations. No artificial quantity-zero
-    # starting row is added, so the staircase begins at the first orange point.
-    graph_data = aggregate[["Cumulative quantity demanded", "Price (₹)"]].copy()
-
-    # Draw the staircase line with the requested vertical-then-horizontal shape.
-    figure = px.line(
-        graph_data,
-        x="Cumulative quantity demanded",
-        y="Price (₹)",
-        markers=False,
-        line_shape="vh",
-    )
-    figure.update_traces(
-        line={"width": 3, "color": "#252A60"},
-        hoverinfo="skip",
-    )
-
-    # Show orange markers only for actual market-demand observations, not for
-    # the invisible quantity-zero starting row.
-    figure.add_scatter(
-        x=aggregate["Cumulative quantity demanded"],
-        y=aggregate["Price (₹)"],
-        mode="markers",
-        marker={"size": 9, "color": "#F58722"},
-        name="Market demand",
-        showlegend=False,
-        hovertemplate=(
-            "Cumulative quantity demanded: %{x}<br>"
-            "Price per Laddo: ₹%{y}<extra></extra>"
-        ),
-    )
+    quantities = aggregate["Cumulative quantity demanded"].astype(int).tolist()
+    price_levels = aggregate["Price (₹)"].astype(int).tolist()
 
     minimum_quantity = int(aggregate["Cumulative quantity demanded"].min())
     maximum_quantity = int(aggregate["Cumulative quantity demanded"].max())
@@ -547,62 +515,430 @@ def show_aggregate_results(
     maximum_price = int(aggregate["Price (₹)"].max())
     price_padding = max(2, int((maximum_price - minimum_price) * 0.05))
 
+    # The Python side supplies the latest full demand curve every three seconds.
+    # Browser-side JavaScript owns the continuous point-to-point animation so it
+    # can pause instantly on hover without waiting for another Streamlit rerun.
+    initial_x = [quantities[0]]
+    initial_y = [price_levels[0]]
+
+    figure = go.Figure(
+        data=[
+            # Trace 0: the progressively drawn navy staircase.
+            go.Scatter(
+                x=initial_x,
+                y=initial_y,
+                mode="lines",
+                line={"width": 3, "color": "#252A60", "shape": "linear"},
+                hoverinfo="skip",
+                showlegend=False,
+            ),
+            # Trace 1: all actual demand observations remain visible as orange
+            # destination points while the navy staircase animates through them.
+            go.Scatter(
+                x=quantities,
+                y=price_levels,
+                mode="markers",
+                marker={"size": 9, "color": "#F58722"},
+                showlegend=False,
+                hovertemplate=(
+                    "Cumulative quantity demanded: %{x}<br>"
+                    "Price per Laddo: ₹%{y}<extra></extra>"
+                ),
+            ),
+            # Trace 2: a slightly larger moving marker that travels along the
+            # staircase while the automatic animation is running.
+            go.Scatter(
+                x=initial_x,
+                y=initial_y,
+                mode="markers",
+                marker={
+                    "size": 13,
+                    "color": "#F58722",
+                    "line": {"width": 2, "color": "#FFFFFF"},
+                },
+                hoverinfo="skip",
+                showlegend=False,
+            ),
+        ]
+    )
+
     figure.update_layout(
-        height=430,
-        margin={"l": 20, "r": 20, "t": 20, "b": 20},
+        height=470,
+        margin={"l": 90, "r": 30, "t": 20, "b": 85},
         plot_bgcolor="#FFFFFF",
         paper_bgcolor="#FFFFFF",
         font={"family": "Poppins, sans-serif", "color": "#404041"},
         xaxis={
-            # Start the visible axis at the first real cumulative quantity.
-            # This removes the unused quantity-zero area and the extra first line.
-            "range": [max(0.5, minimum_quantity - 0.5), maximum_quantity + 0.5],
+            "range": [max(0.5, minimum_quantity - 0.5), maximum_quantity + 0.75],
             "tickmode": "array",
             "tickvals": list(range(minimum_quantity, maximum_quantity + 1)),
-            "title": "Cumulative quantity of Laddo demanded",
+            "title": {
+                "text": "Cumulative quantity of Laddo demanded",
+                "standoff": 24,
+            },
+            "showgrid": False,
+            "zeroline": False,
+            "automargin": True,
+            "fixedrange": True,
         },
         yaxis={
-            # Do not force the price axis down to zero.
             "range": [
-                max(0, minimum_price - price_padding),
-                maximum_price + price_padding,
+                max(0, minimum_price - max(5, price_padding)),
+                maximum_price + max(5, price_padding),
             ],
-            "title": "Price per Laddo (₹)",
+            "title": {
+                "text": "Price per Laddo (₹)",
+                "standoff": 22,
+            },
+            "showgrid": True,
+            "gridcolor": "#E7E9EF",
+            "gridwidth": 1,
+            "zeroline": False,
+            "automargin": True,
+            "fixedrange": True,
         },
         hovermode="closest",
-        # Keep Plotly's identity stable across fragment reruns and animate data
-        # changes when a new submission appears.
-        uirevision=chart_key,
-        transition={
-            "duration": 850 if animate_curve else 0,
-            "easing": "cubic-in-out",
-            "ordering": "traces first",
-        },
+        showlegend=False,
     )
 
-    # During a live update, briefly emphasize the newly expanded demand frontier.
-    # The point settles back to the normal marker styling on the next refresh.
-    if animate_curve:
-        frontier_row = aggregate.iloc[-1]
-        figure.add_scatter(
-            x=[frontier_row["Cumulative quantity demanded"]],
-            y=[frontier_row["Price (₹)"]],
-            mode="markers",
-            marker={
-                "size": 16,
-                "color": "#F58722",
-                "line": {"width": 3, "color": "#FFFFFF"},
-            },
-            showlegend=False,
-            hoverinfo="skip",
-        )
+    # Keep animation state in the browser across the three-second live refresh.
+    browser_state_key = f"{chart_key}:{animation_state_key}"
 
-    st.plotly_chart(
+    post_script = r'''
+    (function () {
+        const gd = document.getElementById('{plot_id}');
+        if (!gd) return;
+
+        const obsX = __OBS_X__;
+        const obsY = __OBS_Y__;
+        const stateKey = __STATE_KEY__;
+
+        const VERTICAL_DURATION_MS = 420;
+        const HORIZONTAL_DURATION_MS = 620;
+        const POINT_PAUSE_MS = 180;
+        const END_PAUSE_MS = 850;
+        const DRAW_INTERVAL_MS = 34;
+
+        let stateRoot;
+        try {
+            stateRoot = window.parent;
+            if (!stateRoot.__marketDemandAnimationStore) {
+                stateRoot.__marketDemandAnimationStore = {};
+            }
+        } catch (error) {
+            stateRoot = window;
+            if (!stateRoot.__marketDemandAnimationStore) {
+                stateRoot.__marketDemandAnimationStore = {};
+            }
+        }
+
+        const store = stateRoot.__marketDemandAnimationStore;
+        const state = store[stateKey] || {};
+        store[stateKey] = state;
+
+        const dataSignature = JSON.stringify([obsX, obsY]);
+        const dataChanged = state.dataSignature !== dataSignature;
+        state.rafId = null;
+
+        if (obsX.length === 0) return;
+
+        if (typeof state.lastCompletedPrice !== 'number') {
+            state.fromIndex = 0;
+            state.lastCompletedPrice = obsY[0];
+            state.leg = 'vertical';
+            state.progress = 0;
+        } else if (dataChanged) {
+            // Continue from the last reached price level using its refreshed
+            // position on the newest live market-demand curve.
+            let mappedIndex = obsY.indexOf(state.lastCompletedPrice);
+            if (mappedIndex < 0) mappedIndex = 0;
+            state.fromIndex = Math.min(mappedIndex, obsX.length - 1);
+            state.leg = 'vertical';
+            state.progress = 0;
+        }
+
+        state.fromIndex = Math.max(
+            0,
+            Math.min(Number(state.fromIndex || 0), obsX.length - 1)
+        );
+        state.leg = state.leg === 'horizontal' ? 'horizontal' : 'vertical';
+        state.progress = Math.max(0, Math.min(Number(state.progress || 0), 1));
+        state.dataSignature = dataSignature;
+        state.legStartTs = null;
+        state.legStartProgress = state.progress;
+        state.pointPauseUntil = 0;
+        state.endPauseUntil = 0;
+
+        function lerp(a, b, t) {
+            return a + (b - a) * t;
+        }
+
+        function buildFullPath() {
+            const lineX = [obsX[0]];
+            const lineY = [obsY[0]];
+            for (let i = 1; i < obsX.length; i += 1) {
+                lineX.push(obsX[i - 1], obsX[i]);
+                lineY.push(obsY[i], obsY[i]);
+            }
+            return { lineX, lineY };
+        }
+
+        const fullPath = buildFullPath();
+
+        function getPartialGeometry() {
+            const i = Math.max(0, Math.min(state.fromIndex, obsX.length - 1));
+            const lineX = [obsX[0]];
+            const lineY = [obsY[0]];
+
+            for (let j = 0; j < i; j += 1) {
+                lineX.push(obsX[j], obsX[j + 1]);
+                lineY.push(obsY[j + 1], obsY[j + 1]);
+            }
+
+            let currentX = obsX[i];
+            let currentY = obsY[i];
+
+            if (i < obsX.length - 1) {
+                if (state.leg === 'vertical') {
+                    currentX = obsX[i];
+                    currentY = lerp(obsY[i], obsY[i + 1], state.progress);
+                    lineX.push(currentX);
+                    lineY.push(currentY);
+                } else {
+                    lineX.push(obsX[i]);
+                    lineY.push(obsY[i + 1]);
+                    currentX = lerp(obsX[i], obsX[i + 1], state.progress);
+                    currentY = obsY[i + 1];
+                    lineX.push(currentX);
+                    lineY.push(currentY);
+                }
+            }
+
+            return {
+                lineX,
+                lineY,
+                currentX,
+                currentY,
+            };
+        }
+
+        function renderPartial() {
+            const geometry = getPartialGeometry();
+            Plotly.restyle(gd, {
+                x: [geometry.lineX],
+                y: [geometry.lineY],
+            }, [0]);
+            // Keep every actual observation visible throughout the animation.
+            Plotly.restyle(gd, {
+                x: [obsX],
+                y: [obsY],
+            }, [1]);
+            Plotly.restyle(gd, {
+                x: [[geometry.currentX]],
+                y: [[geometry.currentY]],
+                visible: true,
+            }, [2]);
+        }
+
+        function renderFull() {
+            Plotly.restyle(gd, {
+                x: [fullPath.lineX],
+                y: [fullPath.lineY],
+            }, [0]);
+            Plotly.restyle(gd, {
+                x: [obsX],
+                y: [obsY],
+            }, [1]);
+            Plotly.restyle(gd, {
+                x: [[]],
+                y: [[]],
+            }, [2]);
+        }
+
+        function stopAnimationAndShowFull() {
+            if (state.rafId !== null) {
+                cancelAnimationFrame(state.rafId);
+                state.rafId = null;
+            }
+            state.hovered = true;
+            renderFull();
+        }
+
+        let lastDrawTs = 0;
+
+        function animationTick(now) {
+            if (state.hovered) {
+                state.rafId = null;
+                return;
+            }
+
+            if (obsX.length < 2) {
+                renderFull();
+                state.rafId = null;
+                return;
+            }
+
+            if (state.endPauseUntil > 0) {
+                if (now < state.endPauseUntil) {
+                    state.rafId = requestAnimationFrame(animationTick);
+                    return;
+                }
+
+                state.fromIndex = 0;
+                state.lastCompletedPrice = obsY[0];
+                state.leg = 'vertical';
+                state.progress = 0;
+                state.legStartTs = now;
+                state.legStartProgress = 0;
+                state.endPauseUntil = 0;
+                state.pointPauseUntil = 0;
+                renderPartial();
+            }
+
+            if (state.pointPauseUntil > 0) {
+                if (now < state.pointPauseUntil) {
+                    state.rafId = requestAnimationFrame(animationTick);
+                    return;
+                }
+                state.pointPauseUntil = 0;
+                state.legStartTs = now;
+                state.legStartProgress = state.progress;
+            }
+
+            if (state.fromIndex >= obsX.length - 1) {
+                renderPartial();
+                state.endPauseUntil = now + END_PAUSE_MS;
+                state.rafId = requestAnimationFrame(animationTick);
+                return;
+            }
+
+            if (state.legStartTs === null) {
+                state.legStartTs = now;
+                state.legStartProgress = state.progress;
+            }
+
+            const legDuration = state.leg === 'vertical'
+                ? VERTICAL_DURATION_MS
+                : HORIZONTAL_DURATION_MS;
+
+            state.progress = Math.min(
+                1,
+                state.legStartProgress + ((now - state.legStartTs) / legDuration)
+            );
+
+            if (now - lastDrawTs >= DRAW_INTERVAL_MS || state.progress >= 1) {
+                renderPartial();
+                lastDrawTs = now;
+            }
+
+            if (state.progress >= 1) {
+                if (state.leg === 'vertical') {
+                    state.leg = 'horizontal';
+                    state.progress = 0;
+                    state.legStartTs = now;
+                    state.legStartProgress = 0;
+                } else {
+                    state.fromIndex += 1;
+                    state.lastCompletedPrice = obsY[state.fromIndex];
+                    state.leg = 'vertical';
+                    state.progress = 0;
+                    state.legStartTs = now;
+                    state.legStartProgress = 0;
+
+                    if (state.fromIndex >= obsX.length - 1) {
+                        state.endPauseUntil = now + END_PAUSE_MS;
+                    } else {
+                        state.pointPauseUntil = now + POINT_PAUSE_MS;
+                    }
+                }
+            }
+
+            state.rafId = requestAnimationFrame(animationTick);
+        }
+
+        function resumeAnimation() {
+            if (!state.hovered) return;
+            state.hovered = false;
+            state.legStartTs = null;
+            state.legStartProgress = state.progress;
+            renderPartial();
+            if (state.rafId === null) {
+                state.rafId = requestAnimationFrame(animationTick);
+            }
+        }
+
+        gd.addEventListener('mouseenter', stopAnimationAndShowFull);
+        gd.addEventListener('mouseleave', resumeAnimation);
+
+        // Preserve hover state across the three-second iframe replacement.
+        try {
+            const parentDocument = window.parent.document;
+            if (state.parentPointerHandler) {
+                parentDocument.removeEventListener('pointermove', state.parentPointerHandler);
+            }
+            state.parentPointerHandler = function (event) {
+                const frame = window.frameElement;
+                if (!frame || !frame.isConnected) return;
+                const rect = frame.getBoundingClientRect();
+                const inside = (
+                    event.clientX >= rect.left &&
+                    event.clientX <= rect.right &&
+                    event.clientY >= rect.top &&
+                    event.clientY <= rect.bottom
+                );
+                if (inside && !state.hovered) {
+                    stopAnimationAndShowFull();
+                } else if (!inside && state.hovered) {
+                    resumeAnimation();
+                }
+            };
+            parentDocument.addEventListener(
+                'pointermove',
+                state.parentPointerHandler,
+                { passive: true }
+            );
+        } catch (error) {
+            // Local mouseenter/mouseleave above still handles hover if parent-page
+            // pointer tracking is unavailable.
+        }
+
+        if (state.hovered) {
+            renderFull();
+        } else {
+            renderPartial();
+            state.rafId = requestAnimationFrame(animationTick);
+        }
+    })();
+    '''
+
+    post_script = (
+        post_script
+        .replace("__OBS_X__", json.dumps(quantities))
+        .replace("__OBS_Y__", json.dumps(price_levels))
+        .replace("__STATE_KEY__", json.dumps(browser_state_key))
+    )
+
+    chart_html = pio.to_html(
         figure,
-        use_container_width=True,
-        key=chart_key,
-        config={"displayModeBar": False},
+        full_html=False,
+        include_plotlyjs="cdn",
+        auto_play=False,
+        config={
+            "displayModeBar": False,
+            "responsive": True,
+            "scrollZoom": False,
+        },
+        post_script=post_script,
+        div_id=f"{chart_key}_plot",
+        default_width="100%",
+        default_height="470px",
     )
+
+    chart_html = (
+        "<style>html,body{margin:0;padding:0;background:#fff;overflow:hidden;}</style>"
+        + chart_html
+    )
+    components.html(chart_html, height=500, scrolling=False)
 
 
 def latest_professor_simulation(responses: pd.DataFrame) -> pd.DataFrame:
