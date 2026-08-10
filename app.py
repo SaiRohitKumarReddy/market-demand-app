@@ -452,11 +452,13 @@ def show_aggregate_results(
     aggregate = make_aggregate_table(responses)
     total_people = len(responses)
 
-    metric_col_1, metric_col_2 = st.columns(2)
-    with metric_col_1:
-        st.metric(response_label, total_people)
-    with metric_col_2:
-        st.metric("Maximum quantity", total_people * 4)
+    summary_table = pd.DataFrame(
+        {
+            response_label: [total_people],
+            "Maximum quantity": [total_people * 4],
+        }
+    )
+    render_aggregate_table(summary_table)
 
     st.markdown("### Market Demand Data")
     render_aggregate_table(aggregate)
