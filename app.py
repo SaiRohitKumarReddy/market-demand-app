@@ -567,6 +567,11 @@ def show_aggregate_results(
                 max(0, minimum_price - price_padding),
                 maximum_price + price_padding,
             ],
+            # Show every actual market price as a Y-axis tick so values such as
+            # ₹10 are never omitted by Plotly's automatic tick spacing.
+            "tickmode": "array",
+            "tickvals": aggregate["Price (₹)"].tolist(),
+            "ticktext": [f"₹{price}" for price in aggregate["Price (₹)"].tolist()],
             "title": "Price per Laddo (₹)",
         },
         hovermode="closest",
