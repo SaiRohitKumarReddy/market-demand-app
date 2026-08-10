@@ -240,6 +240,42 @@ st.markdown(
     .compact-success .success-icon {
         font-weight: 700;
     }
+
+    /* Live-sync indicator for auto-refreshing results. */
+    .live-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: #5B5E69;
+        font-size: 0.82rem;
+        font-weight: 600;
+        margin: 2px 0 12px 0;
+    }
+
+    .live-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background-color: #2E9D55;
+        box-shadow: 0 0 0 rgba(46, 157, 85, 0.45);
+        animation: livePulse 1.6s ease-out infinite;
+    }
+
+    @keyframes livePulse {
+        0% {
+            box-shadow: 0 0 0 0 rgba(46, 157, 85, 0.45);
+            opacity: 1;
+        }
+        70% {
+            box-shadow: 0 0 0 7px rgba(46, 157, 85, 0);
+            opacity: 0.88;
+        }
+        100% {
+            box-shadow: 0 0 0 0 rgba(46, 157, 85, 0);
+            opacity: 1;
+        }
+    }
+
     /* Visual progress shown above each price question. */
     .question-progress-wrap {
         margin: 18px 0 8px 0;
@@ -442,15 +478,23 @@ def show_aggregate_results(
     responses: pd.DataFrame,
     heading: str,
     response_label: str,
+    chart_key: str,
+    animation_state_key: str,
 ) -> None:
     st.subheader(heading)
 
     if responses.empty:
         st.info("No responses have been submitted yet.")
+        st.session_state[animation_state_key] = 0
         return
 
     aggregate = make_aggregate_table(responses)
     total_people = len(responses)
+
+    # Animate only when this browser session detects one or more new rows.
+    previous_total = st.session_state.get(animation_state_key)
+    animate_curve = previous_total is not None and total_people > previous_total
+    st.session_state[animation_state_key] = total_people
 
     summary_table = pd.DataFrame(
         {
@@ -526,8 +570,39 @@ def show_aggregate_results(
             "title": "Price per Laddo (₹)",
         },
         hovermode="closest",
+        # Keep Plotly's identity stable across fragment reruns and animate data
+        # changes when a new submission appears.
+        uirevision=chart_key,
+        transition={
+            "duration": 850 if animate_curve else 0,
+            "easing": "cubic-in-out",
+            "ordering": "traces first",
+        },
     )
-    st.plotly_chart(figure, use_container_width=True)
+
+    # During a live update, briefly emphasize the newly expanded demand frontier.
+    # The point settles back to the normal marker styling on the next refresh.
+    if animate_curve:
+        frontier_row = aggregate.iloc[-1]
+        figure.add_scatter(
+            x=[frontier_row["Cumulative quantity demanded"]],
+            y=[frontier_row["Price (₹)"]],
+            mode="markers",
+            marker={
+                "size": 16,
+                "color": "#F58722",
+                "line": {"width": 3, "color": "#FFFFFF"},
+            },
+            showlegend=False,
+            hoverinfo="skip",
+        )
+
+    st.plotly_chart(
+        figure,
+        use_container_width=True,
+        key=chart_key,
+        config={"displayModeBar": False},
+    )
 
 
 def latest_professor_simulation(responses: pd.DataFrame) -> pd.DataFrame:
@@ -782,6 +857,7 @@ def reset_selected_file() -> None:
         )
         st.session_state["professor_results_visible"] = False
         st.session_state["professor_can_show_results"] = False
+        st.session_state.pop("professor_last_live_response_count", None)
         st.session_state["file_reset_message"] = (
             "Professor file has been reset. The saved professor responses, "
             "table, graph, and current Professor Mode inputs were cleared."
@@ -793,6 +869,7 @@ def reset_selected_file() -> None:
         )
         st.session_state["student_results_visible"] = False
         st.session_state["student_can_show_results"] = False
+        st.session_state.pop("student_last_live_response_count", None)
         st.session_state["file_reset_message"] = (
             "Student file has been reset. All saved student responses, "
             "the student table, and the student graph were cleared."
@@ -805,26 +882,43 @@ def reset_selected_file() -> None:
 # Live results fragments
 # -----------------------------------------------------------------------------
 
+def render_live_status() -> None:
+    """Show a small pulsing indicator so users know results are live."""
+    st.markdown(
+        """
+        <div class="live-status">
+            <span class="live-dot"></span>
+            <span>Live — updates every 3s</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 @st.fragment(run_every="3s")
 def live_professor_results() -> None:
+    render_live_status()
     responses = read_responses(PROFESSOR_SHEET)
     show_aggregate_results(
         responses,
         heading="Professor Simulation",
         response_label="Total Submission",
+        chart_key="professor_live_demand_curve",
+        animation_state_key="professor_last_live_response_count",
     )
-    st.caption("Checks for professor new submission every 3 seconds.")
 
 
 @st.fragment(run_every="3s")
 def live_student_results() -> None:
+    render_live_status()
     responses = read_responses(STUDENT_SHEET)
     show_aggregate_results(
         responses,
         heading="Student Simulation",
         response_label="Total submissions",
+        chart_key="student_live_demand_curve",
+        animation_state_key="student_last_live_response_count",
     )
-    st.caption("Checks for new student submissions every 3 seconds.")
 
 
 # -----------------------------------------------------------------------------
