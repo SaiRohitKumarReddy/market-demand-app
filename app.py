@@ -572,7 +572,7 @@ def show_aggregate_results(
             "tickmode": "array",
             "tickvals": aggregate["Price (₹)"].tolist(),
             "ticktext": [f"₹{price}" for price in aggregate["Price (₹)"].tolist()],
-            "title": "Price per Laddo (₹)",
+            "title": "Price per Laddo",
         },
         hovermode="closest",
         # Keep Plotly's identity stable across fragment reruns and animate data
