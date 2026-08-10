@@ -564,7 +564,7 @@ def show_aggregate_results(
         yaxis={
             # Do not force the price axis down to zero.
             "range": [
-                max(0, minimum_price - price_padding),
+                minimum_price - max(8, price_padding * 2),
                 maximum_price + price_padding,
             ],
             # Show every actual market price as a Y-axis tick so values such as
