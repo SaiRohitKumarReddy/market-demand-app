@@ -64,7 +64,7 @@ def get_price_labels(config: dict) -> list[str]:
 
 
 def get_progress_label(product_name: str) -> str:
-    """Return a short progress label such as 'Scoop' from 'scoop of ice cream'."""
+    """Return a short progress label such as 'Product name'."""
     first_part = product_name.split(" of ", 1)[0].strip()
     if not first_part or first_part[0].isdigit():
         return "Item"
@@ -1080,7 +1080,7 @@ def professor_mode() -> None:
             with setup_column:
                 product_name = st.text_input(
                     "Product name",
-                    placeholder="Example: scoop of ice cream",
+                    placeholder="Example: Product name",
                 )
                 min_price = st.number_input(
                     "Minimum price (₹)",
