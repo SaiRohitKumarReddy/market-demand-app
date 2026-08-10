@@ -12,16 +12,16 @@ import streamlit as st
 from gspread import Worksheet
 
 
-PRICE_COLUMNS = ["vada_pav_1", "vada_pav_2", "vada_pav_3", "vada_pav_4"]
-RESPONSE_COLUMNS = ["submission_id", "submitted_at", "name", *PRICE_COLUMNS]
+PRICE_COLUMNS = ["Laddo_1", "Laddo_2", "Laddo_3", "Laddo_4"]
+RESPONSE_COLUMNS = ["submission_id", "submitted_at", *PRICE_COLUMNS]
 PROFESSOR_SHEET = "professor"
 STUDENT_SHEET = "student"
 
 PRICE_LABELS = [
-    "How much are you willing to pay for the 1st vada pav?",
-    "How much are you willing to pay for the 2nd vada pav?",
-    "How much are you willing to pay for the 3rd vada pav?",
-    "How much are you willing to pay for the 4th vada pav?",
+    "How much are you willing to pay for the 1st Laddo?",
+    "How much are you willing to pay for the 2nd Laddo?",
+    "How much are you willing to pay for the 3rd Laddo?",
+    "How much are you willing to pay for the 4th Laddo?",
 ]
 
 
@@ -378,7 +378,7 @@ def show_aggregate_results(
         showlegend=False,
         hovertemplate=(
             "Cumulative quantity demanded: %{x}<br>"
-            "Price per vada pav: ₹%{y}<extra></extra>"
+            "Price per Laddo: ₹%{y}<extra></extra>"
         ),
     )
 
@@ -400,7 +400,7 @@ def show_aggregate_results(
             "range": [max(0.5, minimum_quantity - 0.5), maximum_quantity + 0.5],
             "tickmode": "array",
             "tickvals": list(range(minimum_quantity, maximum_quantity + 1)),
-            "title": "Cumulative quantity of vada pav demanded",
+            "title": "Cumulative quantity of Laddo demanded",
         },
         yaxis={
             # Do not force the price axis down to zero.
@@ -408,7 +408,7 @@ def show_aggregate_results(
                 max(0, minimum_price - price_padding),
                 maximum_price + price_padding,
             ],
-            "title": "Price per vada pav (₹)",
+            "title": "Price per Laddo (₹)",
         },
         hovermode="closest",
     )
@@ -818,7 +818,7 @@ def student_mode() -> None:
         st.error(save_error)
 
     st.write(
-        "Enter your willingness to pay for each additional vada pav. "
+        "Enter your willingness to pay for each additional Laddo. "
        # "Your name and individual answers will not appear in the public results."
     )
     #st.caption(
