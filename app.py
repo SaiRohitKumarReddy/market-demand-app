@@ -340,15 +340,15 @@ def show_aggregate_results(
     summary_table = pd.DataFrame(
         {
             response_label: [total_people],
-            "Maximum quantity covered by this simulation": [total_people * 4],
+            "Maximum quantity": [total_people * 4],
         }
     )
     render_aggregate_table(summary_table)
 
-    st.markdown("### Market demand data")
+    st.markdown("### Market Demand Data")
     render_aggregate_table(aggregate)
 
-    st.markdown("### Market demand curve")
+    st.markdown("### Market Demand Curve")
 
     # Use only real market-demand observations. No artificial quantity-zero
     # starting row is added, so the staircase begins at the first orange point.
