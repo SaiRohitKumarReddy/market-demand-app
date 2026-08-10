@@ -14,8 +14,8 @@ from gspread import Worksheet
 
 PRICE_COLUMNS = ["Laddo_1", "Laddo_2", "Laddo_3", "Laddo_4"]
 RESPONSE_COLUMNS = ["submission_id", "submitted_at", *PRICE_COLUMNS]
-PROFESSOR_SHEET = "professor"
-STUDENT_SHEET = "student"
+PROFESSOR_SHEET = "Professor"
+STUDENT_SHEET = "Student"
 
 PRICE_LABELS = [
     "How much are you willing to pay for the 1st Laddo?",
