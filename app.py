@@ -153,13 +153,41 @@ st.markdown(
         font-size: 1.35rem;
         font-weight: 700;
     }
+    /* Visual progress shown above each price question. */
+    .question-progress-wrap {
+        margin: 18px 0 8px 0;
+    }
+
+    .question-progress-label {
+        color: var(--bitsom-grey);
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 7px;
+    }
+
+    .question-progress-track {
+        width: 100%;
+        height: 8px;
+        background-color: #E7E7EC;
+        border-radius: 999px;
+        overflow: hidden;
+    }
+
+    .question-progress-fill {
+        height: 100%;
+        background-color: var(--bitsom-orange);
+        border-radius: 999px;
+    }
+
     /* Larger price-question text. */
     .price-question {
         color: var(--bitsom-navy);
         font-size: 20px;
         font-weight: 600;
         line-height: 1.4;
-        margin: 14px 0 8px 0;
+        margin: 10px 0 8px 0;
     }
     </style>
     """,
@@ -427,6 +455,24 @@ def latest_professor_simulation(responses: pd.DataFrame) -> pd.DataFrame:
 # Progressive input flow
 # -----------------------------------------------------------------------------
 
+def render_question_progress(current_index: int, total_questions: int = 4) -> None:
+    """Show the current question number and a simple visual progress bar."""
+    progress_percent = int((current_index / total_questions) * 100)
+    st.markdown(
+        f"""
+        <div class="question-progress-wrap">
+            <div class="question-progress-label">
+                Question {current_index} of {total_questions}
+            </div>
+            <div class="question-progress-track">
+                <div class="question-progress-fill" style="width: {progress_percent}%;"></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def parse_price_input(raw_value: str) -> tuple[int | None, str | None]:
     """Convert a typed price to an integer and return a clear validation error."""
     value = raw_value.strip()
@@ -477,6 +523,8 @@ def render_progressive_person(
 
     with price_column:
         for index, label in enumerate(PRICE_LABELS, start=1):
+
+            render_question_progress(index, len(PRICE_LABELS))
 
             st.markdown(
                 f'<div class="price-question">{label}</div>',
