@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -10,20 +11,69 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from gspread import Worksheet
+from gspread.exceptions import WorksheetNotFound
 
 
-PRICE_COLUMNS = ["vada_pav_1", "vada_pav_2", "vada_pav_3", "vada_pav_4"]
-RESPONSE_COLUMNS = ["submission_id", "submitted_at", "name", *PRICE_COLUMNS]
+# -----------------------------------------------------------------------------
+# App constants
+# -----------------------------------------------------------------------------
+
 PROFESSOR_SHEET = "professor"
 STUDENT_SHEET = "student"
+CONFIG_WORKSHEET = "simulation_config"
 
-PRICE_LABELS = [
-    "How much are you willing to pay for the 1st vada pav?",
-    "How much are you willing to pay for the 2nd vada pav?",
-    "How much are you willing to pay for the 3rd vada pav?",
-    "How much are you willing to pay for the 4th vada pav?",
+CONFIG_COLUMNS = [
+    "product_name",
+    "product_key",
+    "min_price",
+    "max_price",
+    "number_of_people",
+    "started_at",
 ]
 
+BASE_RESPONSE_COLUMNS = ["submission_id", "submitted_at", "name"]
+NUMBER_OF_UNITS = 4
+ORDINALS = ("1st", "2nd", "3rd", "4th")
+
+
+# -----------------------------------------------------------------------------
+# Dynamic simulation configuration helpers
+# -----------------------------------------------------------------------------
+
+def product_to_key(product_name: str) -> str:
+    """Convert a professor-entered product name into a safe Sheet column key."""
+    key = re.sub(r"[^a-z0-9]+", "_", product_name.lower()).strip("_")
+    return key or "product"
+
+
+def get_price_columns(config: dict) -> list[str]:
+    product_key = str(config["product_key"])
+    return [f"{product_key}_{index}" for index in range(1, NUMBER_OF_UNITS + 1)]
+
+
+def get_response_columns(config: dict) -> list[str]:
+    return [*BASE_RESPONSE_COLUMNS, *get_price_columns(config)]
+
+
+def get_price_labels(config: dict) -> list[str]:
+    product_name = str(config["product_name"])
+    return [
+        f"How much are you willing to pay for the {ordinal} {product_name}?"
+        for ordinal in ORDINALS
+    ]
+
+
+def get_progress_label(product_name: str) -> str:
+    """Return a short progress label such as 'Scoop' from 'scoop of ice cream'."""
+    first_part = product_name.split(" of ", 1)[0].strip()
+    if not first_part or first_part[0].isdigit():
+        return "Item"
+    return first_part.title()
+
+
+# -----------------------------------------------------------------------------
+# Page configuration and styling
+# -----------------------------------------------------------------------------
 
 st.set_page_config(
     page_title="Market Demand",
@@ -153,6 +203,7 @@ st.markdown(
         font-size: 1.35rem;
         font-weight: 700;
     }
+
     /* Larger price-question text. */
     .price-question {
         color: var(--bitsom-navy);
@@ -172,8 +223,8 @@ st.markdown(
 # -----------------------------------------------------------------------------
 
 @st.cache_resource
-def get_google_worksheets() -> tuple[Worksheet, Worksheet]:
-    """Connect once and return the professor and student worksheets."""
+def get_google_worksheets() -> tuple[Worksheet, Worksheet, Worksheet]:
+    """Connect once and return professor, student, and config worksheets."""
     credentials = dict(st.secrets["gcp_service_account"])
     client = gspread.service_account_from_dict(credentials)
     spreadsheet = client.open_by_key(str(st.secrets["SPREADSHEET_ID"]))
@@ -185,24 +236,32 @@ def get_google_worksheets() -> tuple[Worksheet, Worksheet]:
         str(st.secrets["STUDENT_WORKSHEET"])
     )
 
-    for worksheet in (professor_sheet, student_sheet):
-        first_row = worksheet.row_values(1)
-        if not first_row:
-            worksheet.update(
-                range_name="A1:G1",
-                values=[RESPONSE_COLUMNS],
-            )
-        elif first_row != RESPONSE_COLUMNS:
-            raise ValueError(
-                f"Worksheet '{worksheet.title}' has incorrect column headings. "
-                f"Expected: {', '.join(RESPONSE_COLUMNS)}"
-            )
+    try:
+        config_sheet = spreadsheet.worksheet(CONFIG_WORKSHEET)
+    except WorksheetNotFound:
+        config_sheet = spreadsheet.add_worksheet(
+            title=CONFIG_WORKSHEET,
+            rows=10,
+            cols=len(CONFIG_COLUMNS),
+        )
 
-    return professor_sheet, student_sheet
+    config_header = config_sheet.row_values(1)
+    if not config_header:
+        config_sheet.update(
+            range_name="A1:F1",
+            values=[CONFIG_COLUMNS],
+        )
+    elif config_header != CONFIG_COLUMNS:
+        raise ValueError(
+            f"Worksheet '{CONFIG_WORKSHEET}' has incorrect column headings. "
+            f"Expected: {', '.join(CONFIG_COLUMNS)}"
+        )
+
+    return professor_sheet, student_sheet, config_sheet
 
 
 def get_worksheet(sheet_key: str) -> Worksheet:
-    professor_sheet, student_sheet = get_google_worksheets()
+    professor_sheet, student_sheet, _ = get_google_worksheets()
 
     if sheet_key == PROFESSOR_SHEET:
         return professor_sheet
@@ -212,28 +271,145 @@ def get_worksheet(sheet_key: str) -> Worksheet:
     raise ValueError(f"Unknown worksheet key: {sheet_key}")
 
 
-def append_rows_safely(sheet_key: str, rows: list[dict]) -> None:
-    """Append submissions to the selected Google Sheet worksheet."""
+@st.cache_data(ttl=3, show_spinner=False)
+def load_active_config() -> dict | None:
+    """Read the professor-selected active simulation configuration."""
+    _, _, config_sheet = get_google_worksheets()
+    values = config_sheet.get_all_values()
+
+    if len(values) <= 1:
+        return None
+
+    headers = values[0]
+    row = values[1]
+    padded_row = row + [""] * max(0, len(headers) - len(row))
+    data = dict(zip(headers, padded_row[: len(headers)]))
+
+    product_name = str(data.get("product_name", "")).strip()
+    product_key = str(data.get("product_key", "")).strip()
+
+    if not product_name or not product_key:
+        return None
+
+    try:
+        min_price = int(data.get("min_price", ""))
+        max_price = int(data.get("max_price", ""))
+        number_of_people = int(data.get("number_of_people", ""))
+    except (TypeError, ValueError):
+        return None
+
+    return {
+        "product_name": product_name,
+        "product_key": product_key,
+        "min_price": min_price,
+        "max_price": max_price,
+        "number_of_people": number_of_people,
+        "started_at": str(data.get("started_at", "")).strip(),
+    }
+
+
+def save_active_config(config: dict) -> None:
+    """Persist the active simulation so every browser sees the same setup."""
+    _, _, config_sheet = get_google_worksheets()
+    config_sheet.clear()
+    config_sheet.update(
+        range_name="A1:F2",
+        values=[
+            CONFIG_COLUMNS,
+            [config.get(column, "") for column in CONFIG_COLUMNS],
+        ],
+    )
+    load_active_config.clear()
+
+
+def clear_active_config() -> None:
+    """Remove the active simulation configuration."""
+    _, _, config_sheet = get_google_worksheets()
+    config_sheet.clear()
+    config_sheet.update(
+        range_name="A1:F1",
+        values=[CONFIG_COLUMNS],
+    )
+    load_active_config.clear()
+
+
+def initialize_response_sheets(config: dict) -> None:
+    """Start a new simulation and give both response sheets dynamic headings."""
+    headers = get_response_columns(config)
+    professor_sheet, student_sheet, _ = get_google_worksheets()
+
+    for worksheet in (professor_sheet, student_sheet):
+        worksheet.clear()
+        worksheet.update(
+            range_name="A1:G1",
+            values=[headers],
+        )
+
+    read_responses.clear()
+
+
+def worksheet_has_data(sheet_key: str) -> bool:
+    """Return True when a response worksheet contains at least one data row."""
+    values = get_worksheet(sheet_key).get_all_values()
+    if len(values) <= 1:
+        return False
+
+    return any(
+        any(str(value).strip() for value in row)
+        for row in values[1:]
+    )
+
+
+def any_response_data_exists() -> bool:
+    return worksheet_has_data(PROFESSOR_SHEET) or worksheet_has_data(STUDENT_SHEET)
+
+
+def append_rows_safely(sheet_key: str, rows: list[dict], config: dict) -> None:
+    """Append submissions using the dynamic product-specific Sheet headings."""
+    response_columns = get_response_columns(config)
+    worksheet = get_worksheet(sheet_key)
+    first_row = worksheet.row_values(1)
+
+    if not first_row:
+        worksheet.update(
+            range_name="A1:G1",
+            values=[response_columns],
+        )
+    elif first_row != response_columns:
+        raise ValueError(
+            f"Worksheet '{worksheet.title}' has incorrect column headings. "
+            f"Expected: {', '.join(response_columns)}"
+        )
+
     values = [
-        [row.get(column, "") for column in RESPONSE_COLUMNS]
+        [row.get(column, "") for column in response_columns]
         for row in rows
     ]
     if values:
-        get_worksheet(sheet_key).append_rows(values, value_input_option="RAW")
+        worksheet.append_rows(values, value_input_option="RAW")
         read_responses.clear()
 
 
 @st.cache_data(ttl=3, show_spinner=False)
-def read_responses(sheet_key: str) -> pd.DataFrame:
-    """Read worksheet rows into a DataFrame with the expected columns."""
+def read_responses(sheet_key: str, product_key: str) -> pd.DataFrame:
+    """Read response rows using the active product-specific headings."""
+    price_columns = [
+        f"{product_key}_{index}" for index in range(1, NUMBER_OF_UNITS + 1)
+    ]
+    response_columns = [*BASE_RESPONSE_COLUMNS, *price_columns]
     values = get_worksheet(sheet_key).get_all_values()
 
-    if len(values) <= 1:
-        return pd.DataFrame(columns=RESPONSE_COLUMNS)
+    if not values or len(values) <= 1:
+        return pd.DataFrame(columns=response_columns)
 
     headers = values[0]
-    data_rows = []
+    if headers != response_columns:
+        raise ValueError(
+            f"Worksheet '{get_worksheet(sheet_key).title}' has incorrect column headings. "
+            f"Expected: {', '.join(response_columns)}"
+        )
 
+    data_rows = []
     for row in values[1:]:
         if not any(str(value).strip() for value in row):
             continue
@@ -242,48 +418,74 @@ def read_responses(sheet_key: str) -> pd.DataFrame:
         data_rows.append(dict(zip(headers, padded_row[: len(headers)])))
 
     if not data_rows:
-        return pd.DataFrame(columns=RESPONSE_COLUMNS)
+        return pd.DataFrame(columns=response_columns)
 
     responses = pd.DataFrame(data_rows)
-    for column in RESPONSE_COLUMNS:
+    for column in response_columns:
         if column not in responses.columns:
             responses[column] = ""
 
-    return responses[RESPONSE_COLUMNS]
+    return responses[response_columns]
 
 
-def clear_worksheet_safely(sheet_key: str) -> None:
-    """Erase saved rows while retaining the expected header row."""
+def clear_worksheet_safely(sheet_key: str, config: dict | None) -> None:
+    """Erase saved rows while retaining active product headings when applicable."""
     worksheet = get_worksheet(sheet_key)
     worksheet.clear()
-    worksheet.update(
-        range_name="A1:G1",
-        values=[RESPONSE_COLUMNS],
-    )
+
+    if config is not None:
+        worksheet.update(
+            range_name="A1:G1",
+            values=[get_response_columns(config)],
+        )
+
     read_responses.clear()
+
+
+def clear_config_if_all_response_data_is_empty() -> bool:
+    """
+    Keep the active professor setup while either response sheet still has data.
+    Once both response files are empty, remove the configuration and old headers.
+    """
+    if worksheet_has_data(PROFESSOR_SHEET) or worksheet_has_data(STUDENT_SHEET):
+        return False
+
+    clear_active_config()
+
+    professor_sheet, student_sheet, _ = get_google_worksheets()
+    professor_sheet.clear()
+    student_sheet.clear()
+    read_responses.clear()
+    return True
 
 
 # -----------------------------------------------------------------------------
 # Validation and calculations
 # -----------------------------------------------------------------------------
 
-def validate_prices(prices: list[int | None]) -> str | None:
-    """Validate completeness and the ₹0-₹120 whole-number range only."""
+def validate_prices(prices: list[int | None], config: dict) -> str | None:
+    """Validate completeness and the professor-selected whole-number range only."""
     if any(price is None for price in prices):
         return "Please enter all four price values."
+
+    min_price = int(config["min_price"])
+    max_price = int(config["max_price"])
 
     for price in prices:
         if isinstance(price, bool) or not isinstance(price, int):
             return "Every price must be a whole number."
 
-        if price < 0 or price > 120:
-            return "Every price must be a whole number between ₹0 and ₹120."
+        if price < min_price or price > max_price:
+            return (
+                f"Every price must be a whole number between "
+                f"₹{min_price} and ₹{max_price}."
+            )
 
     # No decreasing-price rule is applied. Any order is accepted.
     return None
 
 
-def make_aggregate_table(responses: pd.DataFrame) -> pd.DataFrame:
+def make_aggregate_table(responses: pd.DataFrame, config: dict) -> pd.DataFrame:
     table_columns = [
         "Price (₹)",
         "Quantity demanded",
@@ -293,8 +495,9 @@ def make_aggregate_table(responses: pd.DataFrame) -> pd.DataFrame:
     if responses.empty:
         return pd.DataFrame(columns=table_columns)
 
+    price_columns = get_price_columns(config)
     values = (
-        responses[PRICE_COLUMNS]
+        responses[price_columns]
         .apply(pd.to_numeric, errors="coerce")
         .to_numpy()
         .flatten()
@@ -327,6 +530,7 @@ def show_aggregate_results(
     responses: pd.DataFrame,
     heading: str,
     response_label: str,
+    config: dict,
 ) -> None:
     st.subheader(heading)
 
@@ -334,13 +538,16 @@ def show_aggregate_results(
         st.info("No responses have been submitted yet.")
         return
 
-    aggregate = make_aggregate_table(responses)
+    aggregate = make_aggregate_table(responses, config)
     total_people = len(responses)
+    product_name = str(config["product_name"])
 
     summary_table = pd.DataFrame(
         {
             response_label: [total_people],
-            "Maximum quantity covered by this simulation": [total_people * 4],
+            "Maximum quantity covered by this simulation": [
+                total_people * NUMBER_OF_UNITS
+            ],
         }
     )
     render_aggregate_table(summary_table)
@@ -367,8 +574,6 @@ def show_aggregate_results(
         hoverinfo="skip",
     )
 
-    # Show orange markers only for actual market-demand observations, not for
-    # the invisible quantity-zero starting row.
     figure.add_scatter(
         x=aggregate["Cumulative quantity demanded"],
         y=aggregate["Price (₹)"],
@@ -378,7 +583,7 @@ def show_aggregate_results(
         showlegend=False,
         hovertemplate=(
             "Cumulative quantity demanded: %{x}<br>"
-            "Price per vada pav: ₹%{y}<extra></extra>"
+            f"Price per {product_name}: ₹%{{y}}<extra></extra>"
         ),
     )
 
@@ -395,20 +600,17 @@ def show_aggregate_results(
         paper_bgcolor="#FFFFFF",
         font={"family": "Poppins, sans-serif", "color": "#404041"},
         xaxis={
-            # Start the visible axis at the first real cumulative quantity.
-            # This removes the unused quantity-zero area and the extra first line.
             "range": [max(0.5, minimum_quantity - 0.5), maximum_quantity + 0.5],
             "tickmode": "array",
             "tickvals": list(range(minimum_quantity, maximum_quantity + 1)),
-            "title": "Cumulative quantity of vada pav demanded",
+            "title": f"Cumulative quantity demanded ({product_name})",
         },
         yaxis={
-            # Do not force the price axis down to zero.
             "range": [
                 max(0, minimum_price - price_padding),
                 maximum_price + price_padding,
             ],
-            "title": "Price per vada pav (₹)",
+            "title": f"Price per {product_name} (₹)",
         },
         hovermode="closest",
     )
@@ -427,35 +629,51 @@ def latest_professor_simulation(responses: pd.DataFrame) -> pd.DataFrame:
 # Progressive input flow
 # -----------------------------------------------------------------------------
 
-def parse_price_input(raw_value: str) -> tuple[int | None, str | None]:
-    """Convert a typed price to an integer and return a clear validation error."""
+def parse_price_input(
+    raw_value: str,
+    config: dict,
+) -> tuple[int | None, str | None]:
+    """Convert a typed price to an integer using the active professor range."""
     value = raw_value.strip()
+    min_price = int(config["min_price"])
+    max_price = int(config["max_price"])
 
     if not value:
         return None, None
 
     if value.startswith("-"):
-        return None, "Negative values are not allowed. Enter a whole number from 0 to 120."
+        return None, (
+            f"Negative values are not allowed. Enter a whole number "
+            f"from {min_price} to {max_price}."
+        )
 
     if "." in value:
-        return None, "Decimal values are not allowed. Enter a whole number from 0 to 120."
+        return None, (
+            f"Decimal values are not allowed. Enter a whole number "
+            f"from {min_price} to {max_price}."
+        )
 
     if not value.isdigit():
-        return None, "Only whole numbers are allowed. Enter a value from 0 to 120."
+        return None, (
+            f"Only whole numbers are allowed. Enter a value "
+            f"from {min_price} to {max_price}."
+        )
 
     price = int(value)
-    if price > 120:
-        return None, "The maximum allowed price is ₹120."
+    if price < min_price or price > max_price:
+        return None, (
+            f"Enter a whole number between ₹{min_price} and ₹{max_price}."
+        )
 
     return price, None
 
 
 def render_progressive_person(
     key_prefix: str,
+    config: dict,
 ) -> tuple[str, list[int | None], bool]:
     """
-    Display the full-width name prompt and name field first, then reveal one
-    compact price question at a time below it.
+    Display the name field first, then reveal one dynamic product question at a time.
     """
     st.markdown(
         '<div class="name-prompt">Enter name of the person</div>',
@@ -468,15 +686,21 @@ def render_progressive_person(
         label_visibility="collapsed",
     ).strip()
 
-    prices: list[int | None] = [None, None, None, None]
+    prices: list[int | None] = [None] * NUMBER_OF_UNITS
 
     if not name:
         return name, prices, False
 
+    price_labels = get_price_labels(config)
+    progress_label = get_progress_label(str(config["product_name"]))
+    min_price = int(config["min_price"])
+    max_price = int(config["max_price"])
+
     price_column, _ = st.columns([1, 2])
 
     with price_column:
-        for index, label in enumerate(PRICE_LABELS, start=1):
+        for index, label in enumerate(price_labels, start=1):
+            st.caption(f"{progress_label} {index} of {len(price_labels)}")
 
             st.markdown(
                 f'<div class="price-question">{label}</div>',
@@ -485,11 +709,14 @@ def render_progressive_person(
 
             raw_price = st.text_input(
                 f"Price {index}",
-                placeholder="Enter a whole number from 0 to 120 and press Enter",
+                placeholder=(
+                    f"Enter a whole number from {min_price} to {max_price} "
+                    "and press Enter"
+                ),
                 key=f"{key_prefix}_price_{index}",
                 label_visibility="collapsed",
             )
-            price, validation_error = parse_price_input(raw_price)
+            price, validation_error = parse_price_input(raw_price, config)
             prices[index - 1] = price
 
             if validation_error:
@@ -504,7 +731,7 @@ def render_progressive_person(
 
 
 # -----------------------------------------------------------------------------
-# Session-state callbacks
+# Session-state callbacks and save/reset actions
 # -----------------------------------------------------------------------------
 
 def toggle_results(state_key: str) -> None:
@@ -518,7 +745,69 @@ def toggle_reset_options() -> None:
     )
 
 
+def start_simulation(
+    product_name: str,
+    min_price: int,
+    max_price: int,
+    number_of_people: int,
+) -> str | None:
+    """Validate professor setup, persist it, and create dynamic response headings."""
+    product_name = product_name.strip()
+
+    if not product_name:
+        return "Please enter the product name."
+
+    if min_price < 0 or max_price < 0:
+        return "Minimum and maximum prices cannot be negative."
+
+    if min_price > max_price:
+        return "Minimum price cannot be greater than maximum price."
+
+    if number_of_people not in (2, 3, 4):
+        return "Please select 2, 3, or 4 people."
+
+    if load_active_config() is not None:
+        return "An active simulation already exists. Clear the existing data first."
+
+    if any_response_data_exists():
+        return (
+            "Existing response data was found without an active configuration. "
+            "Use Reset Mode to clear both response files before starting a new simulation."
+        )
+
+    config = {
+        "product_name": product_name,
+        "product_key": product_to_key(product_name),
+        "min_price": int(min_price),
+        "max_price": int(max_price),
+        "number_of_people": int(number_of_people),
+        "started_at": datetime.now(IST).replace(tzinfo=None).isoformat(timespec="seconds"),
+    }
+
+    save_active_config(config)
+    initialize_response_sheets(config)
+
+    st.session_state["professor_generation"] = (
+        st.session_state.get("professor_generation", 0) + 1
+    )
+    st.session_state["student_generation"] = (
+        st.session_state.get("student_generation", 0) + 1
+    )
+    st.session_state["professor_can_show_results"] = False
+    st.session_state["student_can_show_results"] = False
+    st.session_state["professor_results_visible"] = False
+    st.session_state["student_results_visible"] = False
+    return None
+
+
 def save_professor_simulation(prefix: str, number_of_people: int) -> None:
+    config = load_active_config()
+    if config is None:
+        st.session_state["professor_save_error"] = (
+            "No active simulation is available. Start a simulation first."
+        )
+        return
+
     all_people: list[tuple[str, list[int]]] = []
 
     for person_index in range(1, number_of_people + 1):
@@ -526,7 +815,7 @@ def save_professor_simulation(prefix: str, number_of_people: int) -> None:
         person_name = st.session_state.get(f"{person_prefix}_name", "").strip()
         raw_prices = [
             st.session_state.get(f"{person_prefix}_price_{price_index}", "")
-            for price_index in range(1, 5)
+            for price_index in range(1, NUMBER_OF_UNITS + 1)
         ]
 
         if not person_name:
@@ -535,15 +824,16 @@ def save_professor_simulation(prefix: str, number_of_people: int) -> None:
 
         prices: list[int] = []
         for raw_price in raw_prices:
-            price, input_error = parse_price_input(str(raw_price))
+            price, input_error = parse_price_input(str(raw_price), config)
             if input_error or price is None:
                 st.session_state["professor_save_error"] = (
-                    f"{person_name}: {input_error or 'Please enter all four price values.'}"
+                    f"{person_name}: "
+                    f"{input_error or 'Please enter all four price values.'}"
                 )
                 return
             prices.append(price)
 
-        validation_error = validate_prices(prices)
+        validation_error = validate_prices(prices, config)
         if validation_error:
             st.session_state["professor_save_error"] = (
                 f"{person_name}: {validation_error}"
@@ -554,18 +844,19 @@ def save_professor_simulation(prefix: str, number_of_people: int) -> None:
 
     simulation_id = f"prof-{uuid.uuid4().hex}"
     submitted_at = datetime.now(IST).replace(tzinfo=None).isoformat(timespec="seconds")
+    price_columns = get_price_columns(config)
 
     rows = [
         {
             "submission_id": simulation_id,
             "submitted_at": submitted_at,
             "name": person_name,
-            **dict(zip(PRICE_COLUMNS, prices)),
+            **dict(zip(price_columns, prices)),
         }
         for person_name, prices in all_people
     ]
 
-    append_rows_safely(PROFESSOR_SHEET, rows)
+    append_rows_safely(PROFESSOR_SHEET, rows, config)
     st.session_state["professor_success_message"] = (
         "Professor simulation saved. Click Show Results to view the table and graph."
     )
@@ -577,10 +868,17 @@ def save_professor_simulation(prefix: str, number_of_people: int) -> None:
 
 
 def save_student_submission(prefix: str) -> None:
+    config = load_active_config()
+    if config is None:
+        st.session_state["student_save_error"] = (
+            "No active simulation is available."
+        )
+        return
+
     student_name = st.session_state.get(f"{prefix}_name", "").strip()
     raw_prices = [
         st.session_state.get(f"{prefix}_price_{price_index}", "")
-        for price_index in range(1, 5)
+        for price_index in range(1, NUMBER_OF_UNITS + 1)
     ]
 
     if not student_name:
@@ -589,7 +887,7 @@ def save_student_submission(prefix: str) -> None:
 
     prices: list[int] = []
     for raw_price in raw_prices:
-        price, input_error = parse_price_input(str(raw_price))
+        price, input_error = parse_price_input(str(raw_price), config)
         if input_error or price is None:
             st.session_state["student_save_error"] = (
                 input_error or "Please enter all four price values."
@@ -597,11 +895,12 @@ def save_student_submission(prefix: str) -> None:
             return
         prices.append(price)
 
-    validation_error = validate_prices(prices)
+    validation_error = validate_prices(prices, config)
     if validation_error:
         st.session_state["student_save_error"] = validation_error
         return
 
+    price_columns = get_price_columns(config)
     append_rows_safely(
         STUDENT_SHEET,
         [
@@ -609,9 +908,10 @@ def save_student_submission(prefix: str) -> None:
                 "submission_id": f"student-{uuid.uuid4().hex}",
                 "submitted_at": datetime.now(IST).replace(tzinfo=None).isoformat(timespec="seconds"),
                 "name": student_name,
-                **dict(zip(PRICE_COLUMNS, prices)),
+                **dict(zip(price_columns, prices)),
             }
         ],
+        config,
     )
 
     st.session_state["student_success_message"] = (
@@ -626,30 +926,45 @@ def save_student_submission(prefix: str) -> None:
 
 def reset_selected_file() -> None:
     selected_file = st.session_state.get("reset_file_choice", "Professor file")
+    config = load_active_config()
 
     if selected_file == "Professor file":
-        clear_worksheet_safely(PROFESSOR_SHEET)
+        clear_worksheet_safely(PROFESSOR_SHEET, config)
         st.session_state["professor_generation"] = (
             st.session_state.get("professor_generation", 0) + 1
         )
         st.session_state["professor_results_visible"] = False
         st.session_state["professor_can_show_results"] = False
-        st.session_state["file_reset_message"] = (
+        base_message = (
             "Professor file has been reset. The saved professor responses, "
             "table, graph, and current Professor Mode inputs were cleared."
         )
     else:
-        clear_worksheet_safely(STUDENT_SHEET)
+        clear_worksheet_safely(STUDENT_SHEET, config)
         st.session_state["student_generation"] = (
             st.session_state.get("student_generation", 0) + 1
         )
         st.session_state["student_results_visible"] = False
         st.session_state["student_can_show_results"] = False
-        st.session_state["file_reset_message"] = (
+        base_message = (
             "Student file has been reset. All saved student responses, "
             "the student table, and the student graph were cleared."
         )
 
+    configuration_cleared = clear_config_if_all_response_data_is_empty()
+    if configuration_cleared:
+        base_message += (
+            " Both response files are now empty, so the active product and price "
+            "configuration was also cleared."
+        )
+        st.session_state["professor_generation"] = (
+            st.session_state.get("professor_generation", 0) + 1
+        )
+        st.session_state["student_generation"] = (
+            st.session_state.get("student_generation", 0) + 1
+        )
+
+    st.session_state["file_reset_message"] = base_message
     st.session_state["show_reset_options"] = False
 
 
@@ -659,22 +974,34 @@ def reset_selected_file() -> None:
 
 @st.fragment(run_every="3s")
 def live_professor_results() -> None:
-    responses = read_responses(PROFESSOR_SHEET)
+    config = load_active_config()
+    if config is None:
+        st.info("No active simulation is available.")
+        return
+
+    responses = read_responses(PROFESSOR_SHEET, str(config["product_key"]))
     show_aggregate_results(
         responses,
         heading="Live Professor Simulation",
         response_label="Total people",
+        config=config,
     )
     st.caption("This section checks for a new professor simulation every 3 seconds.")
 
 
 @st.fragment(run_every="3s")
 def live_student_results() -> None:
-    responses = read_responses(STUDENT_SHEET)
+    config = load_active_config()
+    if config is None:
+        st.info("No active simulation is available.")
+        return
+
+    responses = read_responses(STUDENT_SHEET, str(config["product_key"]))
     show_aggregate_results(
         responses,
         heading="Live Student Simulation",
         response_label="Total submissions",
+        config=config,
     )
     st.caption("This section checks for new student submissions every 3 seconds.")
 
@@ -733,34 +1060,87 @@ def professor_mode() -> None:
                 st.session_state["show_reset_options"] = False
                 st.rerun()
 
-    #st.write(
-     #   "Create people and demonstrate how individual willingness to pay "
-      #  "forms a market demand curve. At each market price, the quantities "
-       # "demanded by all individuals are added together to obtain the total "
-        #"market quantity demanded."
-    #)
-   # st.caption(
-    #    "Enter each answer and press Enter. The next question will appear below it."
-    #)
+    config = load_active_config()
+
+    # No active simulation: professor enters the setup once.
+    if config is None:
+        if any_response_data_exists():
+            st.error(
+                "Existing Professor/Student response data was found, but there is "
+                "no active simulation configuration. Use Reset Mode to clear both "
+                "response files before starting a new simulation."
+            )
+            return
+
+        st.subheader("Simulation Setup")
+
+        with st.form("professor_simulation_setup"):
+            setup_column, _ = st.columns([1, 2])
+
+            with setup_column:
+                product_name = st.text_input(
+                    "Product name",
+                    placeholder="Example: scoop of ice cream",
+                )
+                min_price = st.number_input(
+                    "Minimum price (₹)",
+                    min_value=0,
+                    value=0,
+                    step=1,
+                )
+                max_price = st.number_input(
+                    "Maximum price (₹)",
+                    min_value=0,
+                    value=120,
+                    step=1,
+                )
+                number_of_people = st.selectbox(
+                    "Select number of people to start simulation",
+                    options=[2, 3, 4],
+                    index=0,
+                )
+
+                start_clicked = st.form_submit_button(
+                    "Start Simulation",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+        if start_clicked:
+            start_error = start_simulation(
+                product_name=product_name,
+                min_price=int(min_price),
+                max_price=int(max_price),
+                number_of_people=int(number_of_people),
+            )
+            if start_error:
+                st.error(start_error)
+            else:
+                st.rerun()
+
+        return
+
+    # Active simulation: setup is locked and the existing professor flow runs.
+    product_name = str(config["product_name"])
+    min_price = int(config["min_price"])
+    max_price = int(config["max_price"])
+    number_of_people = int(config["number_of_people"])
+
+    st.caption(
+        f"Active product: {product_name}  |  "
+        f"Price range: ₹{min_price}–₹{max_price}  |  "
+        f"People: {number_of_people}"
+    )
 
     generation = st.session_state.get("professor_generation", 0)
     prefix = f"professor_{generation}"
-
-    selection_column, _ = st.columns([1, 3])
-
-    with selection_column:
-        number_of_people = st.selectbox(
-            "Select number of people to start simulation",
-            options=[2, 3, 4],
-            index=0,
-            key=f"{prefix}_people_count",
-        )
 
     completed_people: list[tuple[str, list[int | None]]] = []
 
     for person_index in range(1, number_of_people + 1):
         person_name, prices, person_complete = render_progressive_person(
             key_prefix=f"{prefix}_person_{person_index}",
+            config=config,
         )
         completed_people.append((person_name, prices))
 
@@ -809,6 +1189,14 @@ def professor_mode() -> None:
 def student_mode() -> None:
     st.header("Student Mode")
 
+    config = load_active_config()
+    if config is None:
+        st.info(
+            "No active simulation is available yet. Please wait for the professor "
+            "to start a simulation."
+        )
+        return
+
     success_message = st.session_state.pop("student_success_message", None)
     if success_message:
         st.success(success_message)
@@ -817,19 +1205,18 @@ def student_mode() -> None:
     if save_error:
         st.error(save_error)
 
+    product_name = str(config["product_name"])
     st.write(
-        "Enter your willingness to pay for each additional vada pav. "
-       # "Your name and individual answers will not appear in the public results."
+        f"Enter your willingness to pay for each additional {product_name}. "
+        # "Your name and individual answers will not appear in the public results."
     )
-    #st.caption(
-     #   "Enter each answer and press Enter. The next question will appear below it."
-    #)
 
     generation = st.session_state.get("student_generation", 0)
     prefix = f"student_{generation}"
 
     student_name, prices, response_complete = render_progressive_person(
         key_prefix=prefix,
+        config=config,
     )
 
     if response_complete:
@@ -866,18 +1253,25 @@ def student_mode() -> None:
 # Main app
 # -----------------------------------------------------------------------------
 
-# A browser refresh creates a new Streamlit session and clears session_state.
-# Rebuild result access from Google Sheets so users can still open saved
-# results without entering another response.
-if "professor_can_show_results" not in st.session_state:
-    st.session_state["professor_can_show_results"] = not read_responses(
-        PROFESSOR_SHEET
-    ).empty
+active_config = load_active_config()
 
-if "student_can_show_results" not in st.session_state:
-    st.session_state["student_can_show_results"] = not read_responses(
-        STUDENT_SHEET
-    ).empty
+if active_config is not None:
+    product_key = str(active_config["product_key"])
+
+    if "professor_can_show_results" not in st.session_state:
+        st.session_state["professor_can_show_results"] = not read_responses(
+            PROFESSOR_SHEET,
+            product_key,
+        ).empty
+
+    if "student_can_show_results" not in st.session_state:
+        st.session_state["student_can_show_results"] = not read_responses(
+            STUDENT_SHEET,
+            product_key,
+        ).empty
+else:
+    st.session_state["professor_can_show_results"] = False
+    st.session_state["student_can_show_results"] = False
 
 if "professor_results_visible" not in st.session_state:
     st.session_state["professor_results_visible"] = False
