@@ -536,7 +536,7 @@ def show_aggregate_results(
         name="Market demand",
         showlegend=False,
         hovertemplate=(
-            "Cumulative quantity demanded: %{x}<br>"
+            "<span style='color:#F58722;'>Cumulative quantity demanded: %{x}<br>"
             "<span style='color:#F58722;'>Price per Laddo: ₹%{y:.0f}</span><extra></extra>"
         ),
     )
