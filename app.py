@@ -7,7 +7,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 import gspread
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from gspread import Worksheet
 
@@ -478,23 +478,15 @@ def show_aggregate_results(
     responses: pd.DataFrame,
     heading: str,
     response_label: str,
-    chart_key: str,
-    animation_state_key: str,
 ) -> None:
     st.subheader(heading)
 
     if responses.empty:
         st.info("No responses have been submitted yet.")
-        st.session_state[animation_state_key] = 0
         return
 
     aggregate = make_aggregate_table(responses)
     total_people = len(responses)
-
-    # Animate only when this browser session detects one or more new rows.
-    previous_total = st.session_state.get(animation_state_key)
-    animate_curve = previous_total is not None and total_people > previous_total
-    st.session_state[animation_state_key] = total_people
 
     summary_table = pd.DataFrame(
         {
@@ -509,106 +501,97 @@ def show_aggregate_results(
 
     st.markdown("### Market Demand Curve")
 
-    # Use only real market-demand observations. No artificial quantity-zero
-    # starting row is added, so the staircase begins at the first orange point.
-    graph_data = aggregate[["Cumulative quantity demanded", "Price (₹)"]].copy()
+    # Static Plotly graph: no animation, no transition, no moving points.
+    x_values = aggregate["Cumulative quantity demanded"].astype(int).tolist()
+    y_values = aggregate["Price (₹)"].astype(int).tolist()
 
-    # Draw the staircase line with the requested vertical-then-horizontal shape.
-    figure = px.line(
-        graph_data,
-        x="Cumulative quantity demanded",
-        y="Price (₹)",
-        markers=False,
-        line_shape="vh",
-    )
-    figure.update_traces(
-        line={"width": 3, "color": "#252A60"},
-        hoverinfo="skip",
-    )
-
-    # Show orange markers only for actual market-demand observations, not for
-    # the invisible quantity-zero starting row.
-    figure.add_scatter(
-        x=aggregate["Cumulative quantity demanded"],
-        y=aggregate["Price (₹)"],
-        mode="markers",
-        marker={"size": 9, "color": "#F58722"},
-        name="Market demand",
-        showlegend=False,
-        hovertemplate=(
-            "<span style='color:#F58722;'>Cumulative quantity demanded: %{x}<br>"
-            "<span style='color:#F58722;'>Price per Laddo: ₹%{y:.0f}</span><extra></extra>"
-        ),
-    )
-
-    minimum_quantity = int(aggregate["Cumulative quantity demanded"].min())
-    maximum_quantity = int(aggregate["Cumulative quantity demanded"].max())
-    minimum_price = int(aggregate["Price (₹)"].min())
-    maximum_price = int(aggregate["Price (₹)"].max())
+    minimum_quantity = min(x_values)
+    maximum_quantity = max(x_values)
+    minimum_price = min(y_values)
+    maximum_price = max(y_values)
     price_padding = max(2, int((maximum_price - minimum_price) * 0.05))
+
+    figure = go.Figure()
+
+    # Static navy staircase line.
+    figure.add_trace(
+        go.Scatter(
+            x=x_values,
+            y=y_values,
+            mode="lines",
+            line={"width": 3, "color": "#252A60", "shape": "vh"},
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+
+    # Orange market-demand points with hover labels.
+    figure.add_trace(
+        go.Scatter(
+            x=x_values,
+            y=y_values,
+            mode="markers",
+            marker={"size": 9, "color": "#F58722"},
+            showlegend=False,
+            hovertemplate=(
+                "Cumulative quantity demanded: %{x}<br>"
+                "Price per Laddo: ₹%{y:.0f}<extra></extra>"
+            ),
+            hoverlabel={
+                "bgcolor": "#FFFFFF",
+                "bordercolor": "#F58722",
+                "font": {"color": "#F58722", "family": "Poppins, sans-serif"},
+            },
+        )
+    )
 
     figure.update_layout(
         height=430,
-        margin={"l": 20, "r": 20, "t": 20, "b": 20},
+        margin={"l": 80, "r": 20, "t": 20, "b": 80},
         plot_bgcolor="#FFFFFF",
         paper_bgcolor="#FFFFFF",
         font={"family": "Poppins, sans-serif", "color": "#404041"},
         xaxis={
-            # Start the visible axis at the first real cumulative quantity.
-            # This removes the unused quantity-zero area and the extra first line.
             "range": [max(0.5, minimum_quantity - 0.5), maximum_quantity + 0.5],
             "tickmode": "array",
             "tickvals": list(range(minimum_quantity, maximum_quantity + 1)),
-            "title": "Cumulative quantity of Laddo demanded",
+            "title": {
+                "text": "Cumulative quantity of Laddo demanded",
+                "standoff": 16,
+            },
+            "showgrid": False,
+            "zeroline": False,
         },
         yaxis={
-            # Do not force the price axis down to zero.
+            # Keep visible space below the lowest price so the last demand line
+            # does not coincide with the X-axis.
             "range": [
                 minimum_price - max(8, price_padding * 2),
                 maximum_price + price_padding,
             ],
-            # Show every actual market price as a Y-axis tick so values such as
-            # ₹10 are never omitted by Plotly's automatic tick spacing.
+            # Show every actual market price, including values such as ₹10.
             "tickmode": "array",
-            "tickvals": aggregate["Price (₹)"].tolist(),
-            "ticktext": [f"₹{price}" for price in aggregate["Price (₹)"].tolist()],
-            "title": "Price per Laddo (₹)",
+            "tickvals": y_values,
+            "ticktext": [f"₹{price}" for price in y_values],
+            "title": {
+                "text": "Price per Laddo (₹)",
+                "standoff": 16,
+            },
+            "showgrid": True,
+            "gridcolor": "#E8E8EC",
+            "zeroline": False,
         },
         hovermode="closest",
-        # Keep Plotly's identity stable across fragment reruns and animate data
-        # changes when a new submission appears.
-        uirevision=chart_key,
-        transition={
-            "duration": 850 if animate_curve else 0,
-            "easing": "cubic-in-out",
-            "ordering": "traces first",
-        },
     )
-
-    # During a live update, briefly emphasize the newly expanded demand frontier.
-    # The point settles back to the normal marker styling on the next refresh.
-    if animate_curve:
-        frontier_row = aggregate.iloc[-1]
-        figure.add_scatter(
-            x=[frontier_row["Cumulative quantity demanded"]],
-            y=[frontier_row["Price (₹)"]],
-            mode="markers",
-            marker={
-                "size": 16,
-                "color": "#F58722",
-                "line": {"width": 3, "color": "#FFFFFF"},
-            },
-            showlegend=False,
-            hoverinfo="skip",
-        )
 
     st.plotly_chart(
         figure,
         use_container_width=True,
-        key=chart_key,
-        config={"displayModeBar": False},
+        config={
+            "displayModeBar": False,
+            "scrollZoom": False,
+        },
     )
-
 
 def latest_professor_simulation(responses: pd.DataFrame) -> pd.DataFrame:
     if responses.empty:
@@ -862,7 +845,6 @@ def reset_selected_file() -> None:
         )
         st.session_state["professor_results_visible"] = False
         st.session_state["professor_can_show_results"] = False
-        st.session_state.pop("professor_last_live_response_count", None)
         st.session_state["file_reset_message"] = (
             "Professor file has been reset. The saved professor responses, "
             "table, graph, and current Professor Mode inputs were cleared."
@@ -874,7 +856,6 @@ def reset_selected_file() -> None:
         )
         st.session_state["student_results_visible"] = False
         st.session_state["student_can_show_results"] = False
-        st.session_state.pop("student_last_live_response_count", None)
         st.session_state["file_reset_message"] = (
             "Student file has been reset. All saved student responses, "
             "the student table, and the student graph were cleared."
@@ -908,8 +889,6 @@ def live_professor_results() -> None:
         responses,
         heading="Professor Simulation",
         response_label="Total Submission",
-        chart_key="professor_live_demand_curve",
-        animation_state_key="professor_last_live_response_count",
     )
 
 
@@ -921,8 +900,6 @@ def live_student_results() -> None:
         responses,
         heading="Student Simulation",
         response_label="Total submissions",
-        chart_key="student_live_demand_curve",
-        animation_state_key="student_last_live_response_count",
     )
 
 
